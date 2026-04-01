@@ -65,6 +65,8 @@ jobs:
 
             # Set service account passwords — credentials never go in SQL files.
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
               -c "ALTER USER seaweedfs  WITH PASSWORD '${{ secrets.SEAWEED_DB_PASSWORD }}';"
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
               -c "ALTER USER infisical WITH PASSWORD '${{ secrets.INFISICAL_DB_PASSWORD }}';"

@@ -51,10 +51,20 @@ jobs:
               sleep 2
             done
 
-            # Re-run extensions SQL — CREATE EXTENSION IF NOT EXISTS is idempotent,
-            # so this is always safe and ensures new extensions are activated
-            # on existing volumes without any manual step.
-            docker exec db psql \
-              -U "${{ secrets.POSTGRES_USER }}" \
+            # Re-run all init scripts — all are idempotent, so this is always
+            # safe and ensures existing volumes stay in sync with the repo.
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
               -d "${{ secrets.POSTGRES_DB }}" \
               -f /docker-entrypoint-initdb.d/01-extensions.sql
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
+              -f /docker-entrypoint-initdb.d/02-seaweedfs.sql
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
+              -f /docker-entrypoint-initdb.d/03-infisical.sql
+
+            # Set service account passwords — credentials never go in SQL files.
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -c "ALTER USER seaweedfs  WITH PASSWORD '${{ secrets.SEAWEED_DB_PASSWORD }}';"
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -c "ALTER USER infisical WITH PASSWORD '${{ secrets.INFISICAL_DB_PASSWORD }}';"

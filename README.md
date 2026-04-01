@@ -4,6 +4,10 @@ PostgreSQL 17 database for the Katisha platform, running in Docker on the
 `katisha-net` bridge network. Every configuration change is made in this
 repo; GitHub Actions handles the rest automatically.
 
+This service is the **single source of truth for all database provisioning**
+on the platform. Every postgres user, database, and permission grant for every
+other service lives in `init/`.
+
 ---
 
 ## How it works
@@ -18,8 +22,11 @@ push to main
                   │      ├─ rebuilds image if Dockerfile changed
                   │      ├─ recreates container if config changed
                   │      └─ leaves the db_data volume untouched
-                  └─ docker exec psql -f 01-extensions.sql
-                         └─ activates any new extensions (idempotent)
+                  ├─ docker exec psql -f 01-extensions.sql   (idempotent)
+                  ├─ docker exec psql -f 02-seaweedfs.sql    (idempotent)
+                  ├─ docker exec psql -f 03-infisical.sql    (idempotent)
+                  ├─ docker exec psql ALTER USER seaweedfs   (sets password)
+                  └─ docker exec psql ALTER USER infisical   (sets password)
 ```
 
 The volume is **never touched** by the pipeline. Only a manual
@@ -35,103 +42,92 @@ db/
 ├── docker-compose.yml           # container, volume, network wiring
 ├── config/
 │   └── postgresql.conf          # all PostgreSQL tuning
-├── init/
-│   └── 01-extensions.sql        # CREATE EXTENSION statements (idempotent)
-├── .env.example                 # template — copy to .env for local dev
-├── .github/
-│   └── workflows/
-│       └── deploy.yml           # CI/CD pipeline
-└── README.md
+├── init/                        # runs automatically on a fresh volume;
+│   │                            # also re-run by the deploy workflow (idempotent)
+│   ├── 01-extensions.sql        # platform extensions (pgvector, pg_trgm, ...)
+│   ├── 02-seaweedfs.sql         # CDN: user, database, permissions
+│   └── 03-infisical.sql         # secrets manager: user, database, permissions
+├── .env.example
+├── actions.env                  # GitHub Actions secrets reference
+└── .github/workflows/deploy.yml
 ```
 
 ---
 
-## Making changes
+## Init script design
 
-### Tuning PostgreSQL
+### Why one SQL file per service?
 
-Edit [config/postgresql.conf](config/postgresql.conf), commit, and push.
-The container is recreated automatically on the next deploy; the data volume
-is not affected.
+Each service that needs a database gets its own `.sql` file. This keeps
+provisioning readable, reviewable, and version-controlled. Every script
+is idempotent — safe to re-run on every deploy against an existing volume.
 
-Key values to adjust per server size:
+### Why no passwords in the SQL files?
 
-| Setting | Rule of thumb |
-|---|---|
-| `shared_buffers` | ~25 % of server RAM |
-| `effective_cache_size` | ~75 % of server RAM |
-| `work_mem` | `RAM / (max_connections * 2)` |
+Passwords are credentials, not structure. The SQL files create users **without
+passwords** (`CREATE USER foo;`). The deploy workflow then runs
+`ALTER USER foo WITH PASSWORD '...'` using GitHub secrets, keeping passwords
+out of the repository entirely.
 
-### Adding a built-in extension
+### Why not shell scripts?
 
-Built-in extensions ship with PostgreSQL and need no OS package. Just add a
-line to [init/01-extensions.sql](init/01-extensions.sql):
-
-```sql
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-```
-
-Commit and push. The pipeline re-runs the file on every deploy — the
-`IF NOT EXISTS` guard makes it safe to re-run against an existing database.
-
-### Adding a third-party extension
-
-Third-party extensions (e.g. pgvector) also need an OS package in the image.
-Two steps:
-
-1. Add the apt package to [Dockerfile](Dockerfile):
-
-```dockerfile
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-17-pgvector \
-    postgresql-17-your-new-extension \
-    && rm -rf /var/lib/apt/lists/*
-```
-
-2. Add the activation line to [init/01-extensions.sql](init/01-extensions.sql):
+Pure SQL is simpler and more readable. The one edge case is `CREATE DATABASE`,
+which cannot run inside a PL/pgSQL `DO $$ ... $$` block (a transaction).
+The workaround is the `\gexec` metacommand:
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS your_extension;
+SELECT 'CREATE DATABASE foo OWNER bar'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'foo')\gexec
 ```
 
-Commit and push. The image is rebuilt and the extension is activated
-automatically.
-
-Find available packages on the server with:
-
-```bash
-apt-cache search postgresql-17
-```
+`\gexec` sends each row of the SELECT result as a SQL command. If the database
+already exists the SELECT returns 0 rows and nothing happens. `\gexec` works
+with `psql -f` (file mode) — the earlier issue with `\gexec` was specific to
+`psql -c` (single command mode).
 
 ---
 
 ## GitHub Actions secrets
 
-Set these under **Settings → Secrets and variables → Actions** in the repo.
+| Secret | Description | Why here and not Infisical? |
+|---|---|---|
+| `SERVER_HOST` | Server IP or hostname | Infrastructure — Infisical not up yet |
+| `SERVER_USER` | SSH username | Infrastructure |
+| `SERVER_SSH_KEY` | Private SSH key | Infrastructure |
+| `POSTGRES_USER` | Superuser name | db starts before Infisical is up |
+| `POSTGRES_PASSWORD` | Superuser password | db starts before Infisical is up |
+| `POSTGRES_DB` | Default database name | db starts before Infisical is up |
+| `INFISICAL_DB_PASSWORD` | Password for the `infisical` postgres user | db starts before Infisical — cannot fetch from it |
+| `SEAWEED_DB_PASSWORD` | Password for the `seaweedfs` postgres user | db starts before Infisical — also stored in Infisical `/cdn` |
 
-| Secret | Description |
-|---|---|
-| `SERVER_HOST` | IP address or hostname of the production server |
-| `SERVER_USER` | SSH username (must be in the `docker` group) |
-| `SERVER_SSH_KEY` | Private SSH key (the server must have the matching public key in `~/.ssh/authorized_keys`) |
-| `POSTGRES_USER` | Database superuser name |
-| `POSTGRES_PASSWORD` | Database superuser password |
-| `POSTGRES_DB` | Default database name |
-
-`GITHUB_TOKEN` is injected automatically by GitHub Actions — do not add it manually.
+**Why are service passwords GitHub secrets here instead of Infisical?**
+The db service must be running *before* Infisical starts (Infisical uses
+postgres as its backend). This is a bootstrapping dependency — we cannot ask
+Infisical for credentials when provisioning the db itself. Once the db is up
+and Infisical is deployed, all other services fetch credentials from Infisical
+at runtime.
 
 ---
 
-## One-time server setup
+## Adding a new service database
 
-Run this once on the server before the first deploy:
+1. Create `init/NN-servicename.sql` following the pattern in `02-seaweedfs.sql`.
+2. Add `MYSERVICE_DB_PASSWORD` to this repo's GitHub Actions secrets.
+3. Add an `ALTER USER myservice WITH PASSWORD '...'` call to the deploy workflow.
+4. Store the same password in Infisical under the service's own path so it can
+   fetch it at runtime.
 
-```bash
-# Create the shared Docker network (shared with all Katisha services)
-docker network create katisha-net
-```
+---
 
-That's it. The pipeline clones the repo and starts the container on the first push.
+## Tuning PostgreSQL
+
+Edit [config/postgresql.conf](config/postgresql.conf), commit, and push.
+
+| Setting | Rule of thumb |
+|---|---|
+| `shared_buffers` | ~25% of server RAM |
+| `effective_cache_size` | ~75% of server RAM |
+| `work_mem` | RAM / (max_connections * 2) |
 
 ---
 
@@ -139,26 +135,17 @@ That's it. The pipeline clones the repo and starts the container on the first pu
 
 ```bash
 cp .env.example .env
-# edit .env with your local credentials
 docker compose up -d --build
 ```
 
 ---
 
-## Network & connectivity
+## Network
 
-The container is named `db` and listens on port `5432` inside `katisha-net`.
-Other services connect using:
+Container name `db`, port `5432` on `katisha-net`. Not exposed to the host.
 
 ```
-postgresql://user:password@db:5432/katisha
+postgresql://user:password@db:5432/dbname
 ```
 
-No port is exposed to the host. Only containers on `katisha-net` can reach it.
-
----
-
-## Timezone
-
-The database runs in `Africa/Kigali` (UTC+2, Central Africa Time).
-All timestamps stored without a time zone offset are in CAT.
+Timezone: `Africa/Kigali` (UTC+2, CAT).

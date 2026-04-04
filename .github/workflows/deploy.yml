@@ -65,6 +65,9 @@ jobs:
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
               -d "${{ secrets.POSTGRES_DB }}" \
               -f /docker-entrypoint-initdb.d/04-pgbouncer.sql
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
+              -f /docker-entrypoint-initdb.d/05-notification.sql
 
             # Set service account passwords — credentials never go in SQL files.
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
@@ -76,3 +79,6 @@ jobs:
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
               -d "${{ secrets.POSTGRES_DB }}" \
               -c "ALTER USER pgbouncer_auth WITH PASSWORD '${{ secrets.PGBOUNCER_AUTH_PASSWORD }}';"
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
+              -c "ALTER USER notification_svc WITH PASSWORD '${{ secrets.NOTIFICATION_DB_PASSWORD }}';"

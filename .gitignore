@@ -6,3 +6,6 @@ actions.env
 
 # Local dev script — not needed in CI
 dev-up.sh
+
+# Local docker-compose override — contains plaintext dev passwords
+docker-compose.override.yml

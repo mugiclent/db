@@ -77,6 +77,9 @@ jobs:
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
               -d "${{ secrets.POSTGRES_DB }}" \
               -f /docker-entrypoint-initdb.d/08-trip-service.sql
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
+              -f /docker-entrypoint-initdb.d/09-payment-service.sql
 
             # Set service account passwords — credentials never go in SQL files.
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
@@ -100,3 +103,6 @@ jobs:
             docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
               -d "${{ secrets.POSTGRES_DB }}" \
               -c "ALTER USER trip_svc WITH PASSWORD '${{ secrets.TRIP_SVC_DB_PASSWORD }}';"
+            docker exec db psql -U "${{ secrets.POSTGRES_USER }}" \
+              -d "${{ secrets.POSTGRES_DB }}" \
+              -c "ALTER USER payment_svc WITH PASSWORD '${{ secrets.PAYMENT_SVC_DB_PASSWORD }}';"

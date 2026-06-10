@@ -9,3 +9,6 @@ dev-up.sh
 
 # Local docker-compose override — contains plaintext dev passwords
 docker-compose.override.yml
+
+# Local password init script — generated for dev, never committed
+init/10-set-passwords.sh
